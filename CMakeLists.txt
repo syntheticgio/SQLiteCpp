@@ -6,7 +6,7 @@
 # or copy at http://opensource.org/licenses/MIT)
 cmake_minimum_required(VERSION 3.1) # for "CMAKE_CXX_STANDARD" version
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake") # custom CMake modules like FindSQLiteCpp
-project(SQLiteCpp VERSION 3.0.0)
+project(SQLiteCpp VERSION 3.1.1)
 
 # SQLiteC++ 3.x requires C++11 features
 if (NOT CMAKE_CXX_STANDARD)
@@ -49,7 +49,12 @@ else (MSVC)
     set(CPPLINT_ARG_OUTPUT      "--output=eclipse")
     set(CPPCHECK_ARG_TEMPLATE   "--template=gcc")
     # Useful compile flags and extra warnings
-    add_compile_options(-fstack-protector)
+    # Stack protection is not supported on MinGW-W64 on Windows, allow this flag to be turned off.
+    option(SQLITECPP_USE_STACK_PROTECTION "USE Stack Protection hardening." ON)
+    if (SQLITECPP_USE_STACK_PROTECTION)
+        message (STATUS "Using Stack Protection hardening")
+        add_compile_options(-fstack-protector)
+    endif()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Wswitch-enum -Wshadow -Wno-long-long") # C++ only, don't bother with sqlite3
     if (CMAKE_COMPILER_IS_GNUCXX)
         # GCC flags
@@ -160,7 +165,6 @@ set(SQLITECPP_SCRIPT
  build.sh
  cpplint.py
  Doxyfile
- cmake/FindSQLiteCpp.cmake
  cmake/FindSQLite3.cmake
  cmake/SQLiteCppConfig.cmake.in
 )
@@ -223,6 +227,7 @@ endif ()
 option(SQLITECPP_INTERNAL_SQLITE "Add the internal SQLite3 source to the project." ON)
 if (SQLITECPP_INTERNAL_SQLITE)
     message(STATUS "Compile sqlite3 from source in subdirectory")
+    option(SQLITE_ENABLE_JSON1 "Enable JSON1 extension when building internal sqlite3 library." ON)
     # build the SQLite3 C library (for ease of use/compatibility) versus Linux sqlite3-dev package
     add_subdirectory(sqlite3)
     target_link_libraries(SQLiteCpp PUBLIC sqlite3)
@@ -232,6 +237,45 @@ else (SQLITECPP_INTERNAL_SQLITE)
     target_link_libraries(SQLiteCpp PUBLIC SQLite::SQLite3)
     if(SQLite3_VERSION VERSION_LESS "3.19")
         set_target_properties(SQLiteCpp PROPERTIES COMPILE_FLAGS "-DSQLITECPP_HAS_MEM_STRUCT")
+    endif()
+
+    # When using the SQLite codec, we need to link against the sqlcipher lib & include <sqlcipher/sqlite3.h>
+    # So this gets the lib & header, and links/includes everything
+    if(SQLITE_HAS_CODEC)
+        # Make PkgConfig optional since Windows doesn't usually have it installed.
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            # IMPORTED_TARGET was added in 3.6.3
+            if(CMAKE_VERSION VERSION_LESS 3.6.3)
+                pkg_check_modules(sqlcipher REQUIRED sqlcipher)
+                # Only used in Database.cpp so PRIVATE to hide from end-user
+                # Since we can't use IMPORTED_TARGET on this older Cmake version, manually link libs & includes
+                target_link_libraries(SQLiteCpp PRIVATE ${sqlcipher_LIBRARIES})
+                target_include_directories(SQLiteCpp PRIVATE ${sqlcipher_INCLUDE_DIRS})
+            else()
+                pkg_check_modules(sqlcipher REQUIRED IMPORTED_TARGET sqlcipher)
+                # Only used in Database.cpp so PRIVATE to hide from end-user
+                target_link_libraries(SQLiteCpp PRIVATE PkgConfig::sqlcipher)
+            endif()
+        else()
+            # Since we aren't using pkgconf here, find it manually
+            find_library(sqlcipher_LIBRARY "sqlcipher")
+            find_path(sqlcipher_INCLUDE_DIR "sqlcipher/sqlite3.h"
+                PATH_SUFFIXES
+                    "include"
+                    "includes"
+            )
+            # Hides it from the GUI
+            mark_as_advanced(sqlcipher_LIBRARY sqlcipher_INCLUDE_DIR)
+            if(NOT sqlcipher_INCLUDE_DIR)
+                message(FATAL_ERROR "${PROJECT_NAME} requires the \"<sqlcipher/sqlite3.h>\" header to use the codec functionality but it wasn't found.")
+            elseif(NOT sqlcipher_LIBRARY)
+                message(FATAL_ERROR "${PROJECT_NAME} requires the sqlcipher library to use the codec functionality but it wasn't found.")
+            endif()
+            # Only used in Database.cpp so PRIVATE to hide from end-user
+            target_include_directories(SQLiteCpp PRIVATE "${sqlcipher_INCLUDE_DIR}/sqlcipher")
+            target_link_libraries(SQLiteCpp PRIVATE ${sqlcipher_LIBRARY})
+        endif()
     endif()
 endif (SQLITECPP_INTERNAL_SQLITE)
 
@@ -270,7 +314,7 @@ write_basic_package_version_file(
 configure_package_config_file(
     cmake/${PROJECT_NAME}Config.cmake.in
     cmake/${PROJECT_NAME}Config.cmake
-    INSTALL_DESTINATION lib/cmake/${PROJECT_NAME})
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/cmake/${PROJECT_NAME}Config.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/cmake/${PROJECT_NAME}ConfigVersion.cmake
