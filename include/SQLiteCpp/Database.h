@@ -472,12 +472,8 @@ public:
     /**
      * @brief Check if aRet equal SQLITE_OK, else throw a SQLite::Exception with the SQLite error message
      */
-    void check(const int aRet, bool ignore_exists=true) const
+    void check(const int aRet) const
     {
-        // if ret == 1 that means the table already exists; don't throw error if ignore_exists flag is on
-        if (aRet == 1 && ignore_exists) {
-            return;
-        }
         if (SQLite::OK != aRet)
         {
             throw SQLite::Exception(getHandle(), aRet);
